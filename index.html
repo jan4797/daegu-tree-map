@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>내 주변 가로수 지도 (대구광역시)</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=v4d0vybfpr"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; font-family: 'Inter', sans-serif; }
+        #map-container { position: relative; width: 100%; height: 100%; }
+        #map { width: 100%; height: 100%; }
+        #loader { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(255, 255, 255, 0.8); z-index: 1000; display: flex; justify-content: center; align-items: center; flex-direction: column; gap: 1rem; }
+        .spinner { border: 8px solid #f3f3f3; border-top: 8px solid #3498db; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        .map-btn {
+            position: absolute;
+            z-index: 100;
+            padding: 10px 20px;
+            font-size: 16px;
+            font-weight: bold;
+            color: white;
+            border: none;
+            border-radius: 9999px;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            transition: background-color 0.3s;
+        }
+        #research-btn { top: 15px; left: 50%; transform: translateX(-50%); background-color: #10B981; }
+        #research-btn:hover { background-color: #059669; }
+        
+        #my-location-btn { bottom: 30px; right: 20px; background-color: #3B82F6; }
+        #my-location-btn:hover { background-color: #2563EB; }
+
+        #map-center-marker {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 30px;
+            height: 30px;
+            transform: translate(-50%, -50%);
+            border: 2px solid #DC2626;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.5);
+            pointer-events: none;
+            z-index: 100;
+        }
+        #map-center-marker::before, #map-center-marker::after {
+            content: '';
+            position: absolute;
+            background-color: #DC2626;
+        }
+        #map-center-marker::before { top: 50%; left: 5px; right: 5px; height: 2px; margin-top: -1px; }
+        #map-center-marker::after { left: 50%; top: 5px; bottom: 5px; width: 2px; margin-left: -1px; }
+        
+        .info-window-content {
+            padding: 10px;
+            font-size: 14px;
+            width: 300px;
+            
+            /* --- 이 부분을 수정 또는 추가해주세요 --- */
+            max-height: 300px;  /* 정보창 내용의 최대 높이를 300px로 제한 */
+            overflow-y: auto;   /* 내용이 최대 높이를 넘어가면 세로 스크롤바 자동 생성 */
+        }
+        .info-window-content .tree-title { font-size: 1.125rem; font-weight: bold; margin-bottom: 0.5rem; }
+        .info-window-content .simple-info { margin-bottom: 0.75rem; }
+        .info-window-content .toggle-details { color: #3B82F6; cursor: pointer; text-decoration: underline; font-size: 0.875rem; }
+        .info-window-content .details-table { width: 100%; text-align: left; font-size: 12px; margin-top: 0.75rem;}
+        .info-window-content .details-table td { padding: 2px 0; }
+        .info-window-content .details-table td:first-child { font-weight: 600; padding-right: 8px; }
+
+
+        #coords-display {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="map-container">
+        <div id="map"></div>
+        <div id="map-center-marker"></div>
+        <div id="coords-display"></div>
+    </div>
+    
+    <button id="research-btn" class="map-btn">현 지도에서 재검색</button>
+    <button id="my-location-btn" class="map-btn">내 위치로</button>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <p class="text-lg font-semibold text-gray-700">모든 가로수 정보를 불러오는 중입니다...</p>
+    </div>
+
+    <script>
+        // --- 설정 변수 ---
+        const TREE_API_SERVICE_KEY = 'QhgEikQladOiYuFC8/VzdBHde70CpoIJWnYtC6/Q0pSxmVKe0zOPJodBjWyyuQaOyP9gvZLL200x2WrGkvGIxw==';
+
+        // --- DOM 요소 ---
+        const mapElement = document.getElementById('map');
+        const loader = document.getElementById('loader');
+        const researchBtn = document.getElementById('research-btn');
+        const myLocationBtn = document.getElementById('my-location-btn');
+        const coordsDisplay = document.getElementById('coords-display');
+
+        // --- 전역 변수 ---
+        let map, infoWindow, treeMarkers = [];
+
+        // --- 초기화 ---
+        function init() {
+            if (typeof naver === "undefined" || typeof naver.maps === "undefined") {
+                loader.style.display = 'none';
+                alert("네이버 지도 API 로드에 실패했습니다. Client ID와 Web 서비스 URL 설정을 다시 확인해주세요.");
+                return;
+            }
+            
+            const defaultPosition = new naver.maps.LatLng(35.8714354, 128.601445);
+            initializeMap(defaultPosition);
+            fetchStreetTrees(defaultPosition.y, defaultPosition.x);
+            
+            researchBtn.addEventListener('click', () => {
+                const center = map.getCenter();
+                fetchStreetTrees(center.y, center.x);
+            });
+
+            myLocationBtn.addEventListener('click', () => {
+                if (navigator.geolocation) {
+                    loader.style.display = 'flex';
+                    navigator.geolocation.getCurrentPosition(onSuccessGeolocation, onErrorGeolocation);
+                } else {
+                    alert("이 브라우저는 위치 정보를 지원하지 않습니다.");
+                }
+            });
+        }
+
+        // --- 지도 관련 ---
+        function initializeMap(position) {
+            const mapOptions = { center: position, zoom: 16, minZoom: 6, zoomControl: true, zoomControlOptions: { position: naver.maps.Position.TOP_RIGHT } };
+            map = new naver.maps.Map(mapElement, mapOptions);
+            infoWindow = new naver.maps.InfoWindow({ anchorSkew: true, borderWidth: 1, borderColor: "#A9A9A9" });
+
+            naver.maps.Event.addListener(map, 'idle', function() {
+                updateCoords(map.getCenter());
+            });
+
+            updateCoords(position);
+        }
+
+        // --- 위치 정보 관련 ---
+        function onSuccessGeolocation(position) {
+            const userLocation = new naver.maps.LatLng(position.coords.latitude, position.coords.longitude);
+            map.setCenter(userLocation);
+            map.setZoom(16);
+            fetchStreetTrees(userLocation.y, userLocation.x);
+        }
+
+        function onErrorGeolocation(error) {
+            loader.style.display = 'none';
+            console.error('위치 정보 가져오기 실패:', error);
+            alert("현재 위치를 가져올 수 없습니다. 브라우저의 위치 정보 접근을 허용했는지 확인해주세요.");
+        }
+        
+        function updateCoords(center) {
+            const lat = center.y.toFixed(6);
+            const lng = center.x.toFixed(6);
+            coordsDisplay.textContent = `중심 좌표: ${lat}, ${lng}`;
+        }
+
+        // --- 가로수 API 관련 (페이지네이션 기능 추가) ---
+        async function fetchStreetTrees(lat, lon) {
+            clearTreeMarkers();
+            loader.style.display = 'flex';
+            
+            const numOfRows = 100, radius = 0.3, type = 'json';
+            const encodedServiceKey = encodeURIComponent(TREE_API_SERVICE_KEY);
+            
+            try {
+                const firstPageUrl = `https://apis.data.go.kr/6270000/dgRoadsideTree/getRoadsideTree?serviceKey=${encodedServiceKey}&pageNo=1&numOfRows=${numOfRows}&type=${type}&lat=${lat}&lot=${lon}&radius=${radius}`;
+                
+                const response = await fetch(firstPageUrl);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const data = await response.json();
+
+                if (data.header && data.header.resultCode !== '00') {
+                    throw new Error(`가로수 정보 조회 실패: ${data.header.resultMsg} (오류 코드: ${data.header.resultCode})`);
+                }
+
+                const totalCount = data.body.totalCount;
+                if (totalCount === 0) {
+                    alert(`현재 지도 위치 주변 ${radius * 1000}m 내에는 가로수 정보가 없습니다.`);
+                    return;
+                }
+
+                let allTrees = [];
+                if (data.body && data.body.items) {
+                    let trees = data.body.items.item;
+                    allTrees = Array.isArray(trees) ? trees : [trees];
+                }
+                
+                const totalPages = Math.ceil(totalCount / numOfRows);
+                if (totalPages > 1) {
+                    const fetchPromises = [];
+                    for (let pageNo = 2; pageNo <= totalPages; pageNo++) {
+                        const pageUrl = `https://apis.data.go.kr/6270000/dgRoadsideTree/getRoadsideTree?serviceKey=${encodedServiceKey}&pageNo=${pageNo}&numOfRows=${numOfRows}&type=${type}&lat=${lat}&lot=${lon}&radius=${radius}`;
+                        fetchPromises.push(fetch(pageUrl));
+                    }
+                    
+                    const responses = await Promise.all(fetchPromises);
+
+                    for (const res of responses) {
+                        if (!res.ok) throw new Error(`추가 페이지 로딩 중 오류 발생: ${res.status}`);
+                        const pageData = await res.json();
+                        if (pageData.body && pageData.body.items) {
+                            let pageTrees = pageData.body.items.item;
+                            const newTrees = Array.isArray(pageTrees) ? pageTrees : [pageTrees];
+                            allTrees.push(...newTrees);
+                        }
+                    }
+                }
+                
+                displayTreeMarkers(allTrees);
+                // alert(`총 ${totalCount}그루의 가로수 정보를 모두 불러왔습니다.`);
+
+            } catch (error) {
+                console.error('가로수 정보를 불러오는 중 오류가 발생했습니다:', error);
+                alert('가로수 정보를 불러오는 중 오류가 발생했습니다. 개발자 도구(F12) 콘솔을 확인해주세요.');
+            } finally {
+                loader.style.display = 'none';
+            }
+        }
+        
+        // [최종 수정] 정보창 상세/간략 보기 토글 및 자동 리사이징 함수
+        function toggleDetails(element) {
+            // 1. '자세히 보기' 영역을 보이거나 숨김
+            const detailsDiv = element.nextElementSibling;
+            if (detailsDiv.style.display === 'none') {
+                detailsDiv.style.display = 'block';
+                element.textContent = '간략히 보기';
+            } else {
+                detailsDiv.style.display = 'none';
+                element.textContent = '자세히 보기';
+            }
+
+            // 2. [핵심] 변경된 내용 전체를 찾아 정보창에 다시 설정하여 크기를 재계산하게 함
+            const contentWrapper = element.closest('.info-window-content');
+            if (infoWindow && contentWrapper) {
+                // HTML 문자열이 아닌, 실제 DOM 요소를 전달하여 현재 상태(열림/닫힘)를 유지
+                infoWindow.setContent(contentWrapper);
+            }
+        }
+
+        // --- 마커 및 정보창 관련 ---
+        function displayTreeMarkers(trees) {
+            trees.forEach(tree => {
+                const position = new naver.maps.LatLng(tree.treeLat, tree.treeLot);
+                
+                // ===================================================================
+                // [수정됨] 나무 이름에 따라 아이콘 색상을 결정
+                // ===================================================================
+                let color = '#808080'; // 기본 회색
+                const treeName = tree.treeNm || '';
+                if (treeName.includes('양버즘나무')) color = '#C39755'; 
+                else if (treeName.includes('느티나무')) color = '#228B22'; 
+                else if (treeName.includes('은행나무')) color = '#F7E600';
+                else if (treeName.includes('중국단풍')) color = '#B91C1C';
+                else if (treeName.includes('단풍나무')) color = '#B91C1C';
+                else if (treeName.includes('참나무')) color = '#68d1f7';
+                else if (treeName.includes('왕참나무')) color = '#68a4f7';
+                else if (treeName.includes('왕벚나무')) color = '#fbabab';
+                else if (treeName.includes('소나무')) color = '#81d742';
+                else if (treeName.includes('이팝나무')) color = '#f6ecdf';
+                
+
+                const marker = new naver.maps.Marker({
+                    map: map,
+                    position: position,
+                    icon: { 
+                        content: `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="1"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"></path><line x1="16" y1="8" x2="2" y2="22"></line><line x1="17.5" y1="15" x2="9" y2="15"></line></svg>`,
+                        anchor: new naver.maps.Point(14, 28) 
+                    },
+                    title: tree.treeNm
+                });
+
+                naver.maps.Event.addListener(marker, 'click', function() {
+                    // ===================================================================
+                    // [수정됨] 정보창 내용을 기본(간략)과 상세 정보로 분리
+                    // ===================================================================
+                    const content = `
+                        <div class="info-window-content">
+                            <div class="tree-title" style="color:${color};">${tree.treeNm || '정보 없음'}</div>
+                            <div class="simple-info">
+                                <div><strong>수목 구분:</strong> ${tree.treeGb || '정보 없음'}</div>
+                                <div><strong>수목 나이:</strong> ${tree.ageOfTree || '0'} 년</div>
+                            </div>
+                            <a href="javascript:void(0);" class="toggle-details" onclick="toggleDetails(this)">자세히 보기</a>
+                            <div class="details-section" style="display: none;">
+                                <table class="details-table">
+                                    <tbody>
+                                        <tr><td>ID</td><td>${tree.id || '정보 없음'}</td></tr>
+                                        <tr><td>관리번호</td><td>${tree.mngNo || '정보 없음'}</td></tr>
+                                        <tr><td>수목 유형</td><td>${tree.treeType || '정보 없음'}</td></tr>
+                                        <tr><td>식재일</td><td>${tree.plantingYmd || '정보 없음'}</td></tr>
+                                        <tr><td>관리기관</td><td>${tree.mngInstNm || '정보 없음'} (${tree.mngInstTel || '정보 없음'})</td></tr>
+                                        <tr><td>데이터 기준일</td><td>${tree.crtrYmd || '정보 없음'}</td></tr>
+                                        <tr><td>도로명</td><td>${tree.roadNm || '정보 없음'} (${tree.roadType || '정보 없음'})</td></tr>
+                                        <tr><td>상세 위치</td><td>${tree.treeLocation || '정보 없음'}</td></tr>
+                                        <tr><td>위도/경도</td><td>${tree.treeLat || ''} / ${tree.treeLot || ''}</td></tr>
+                                        <tr><td>도로명 주소</td><td>${tree.roadNmAddr || '정보 없음'}</td></tr>
+                                        <tr><td>지번 주소</td><td>${tree.lotNoAddr || '정보 없음'}</td></tr>
+                                        <tr><td>흉고/근원직경</td><td>${tree.diameterBreast || '0'} / ${tree.diameterRoot || '0'}</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
+                    infoWindow.setContent(content);
+                    infoWindow.open(map, marker);
+                });
+                treeMarkers.push(marker);
+            });
+        }
+
+        function clearTreeMarkers() {
+            treeMarkers.forEach(marker => {
+                marker.setMap(null);
+            });
+            treeMarkers = [];
+        }
+
+        // --- 앱 실행 ---
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
